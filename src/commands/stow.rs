@@ -18,7 +18,12 @@ pub fn stow(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) 
     let log = Logger::new(verbose, quiet);
     log.verbose(1, "Stowing files in cargo hold...");
 
-    let (repo_root, tracked_files, symlink_count) = discover_tracked_files(working_dir)?;
+    let discovered = discover_tracked_files(working_dir)?;
+    let total_processable = discovered.processable_count();
+    let repo_root = discovered.repo_root;
+    let tracked_files = discovered.files;
+    let symlink_count = discovered.symlink_count;
+    let inaccessible_files = discovered.inaccessible_files;
 
     log.verbose(1, format!("Found {} tracked files", tracked_files.len()));
 
@@ -30,13 +35,23 @@ pub fn stow(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) 
         );
     }
 
+    let mut errors = inaccessible_files.len();
+    if errors > 0 && !log.quiet() {
+        eprintln!("Warning: Failed to access {errors} tracked file(s)");
+        for path in &inaccessible_files {
+            log.verbose(
+                1,
+                format!("  Could not access tracked file: {}", path.display()),
+            );
+        }
+    }
+
     let file_states: Vec<Result<FileState>> = tracked_files
         .par_iter()
         .map(|path| build_file_state(&repo_root, path))
         .collect();
 
     let mut new_metadata = StateMetadata::new();
-    let mut errors = 0;
     for result in file_states {
         match result {
             Ok(state) => {
@@ -56,11 +71,17 @@ pub fn stow(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) 
         }
     }
 
-    if errors > 0 && !log.quiet() {
-        eprintln!("Warning: Failed to analyze {errors} file(s)");
-        if log.level() == 0 {
-            eprintln!("Run with -v for more details");
+    if errors > 0 {
+        if !log.quiet() {
+            eprintln!("Warning: Failed to analyze {errors} file(s)");
+            if log.level() == 0 {
+                eprintln!("Run with -v for more details");
+            }
         }
+        return Err(HoldError::PartialFileProcessing {
+            failed: errors,
+            total: total_processable,
+        });
     }
 
     let existing_metadata = match load_metadata(metadata_path) {
