@@ -33,7 +33,10 @@ pub(crate) fn parse_size(s: &str) -> Result<u64> {
     // cap of 0 is not a no-op here: `select_for_size` reads it as "free
     // everything", so a typo like `-5G` would quietly clear the cache instead
     // of being rejected.
-    if !base.is_finite() || base < 0.0 {
+    // `is_sign_negative` rather than `< 0.0`: `-0` and `-0.0` parse to negative
+    // zero, for which `< 0.0` is false, so `-0G` would otherwise still reach
+    // the cast and land on the same dangerous 0.
+    if !base.is_finite() || base.is_sign_negative() {
         return Err(HoldError::InvalidMetadataSize(
             s.to_string(),
             "Size must be a non-negative, finite number".to_string(),
@@ -113,11 +116,15 @@ mod tests {
     fn parse_size_rejects_negative_values_instead_of_clamping_to_zero() {
         // `(-5.0 * 1024f64.powi(3)) as u64` is 0, and a max size of 0 makes
         // `select_for_size` free the whole cache, so this has to be an error.
-        for input in ["-1", "-5G", "-0.5G", "-500M", "-1T", "-1KiB"] {
+        // `-0` and `-0.0` parse to negative zero, where `< 0.0` is false: an explicitly
+        // negative input must not reach the cast and become the 0 cap either.
+        for input in [
+            "-1", "-5G", "-0.5G", "-500M", "-1T", "-1KiB", "-0", "-0.0", "-0G",
+        ] {
+            let result = parse_size(input);
             assert!(
-                parse_size(input).is_err(),
-                "{input} should be rejected, got {:?}",
-                parse_size(input)
+                result.is_err(),
+                "{input} should be rejected, got {result:?}"
             );
         }
     }
